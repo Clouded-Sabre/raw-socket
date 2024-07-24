@@ -42,7 +42,7 @@ func getLocalIP(dstIP net.IP) (net.IP, *net.Interface, net.IP, error) {
 
 	for _, r := range routes {
 		if rtMsg, ok := r.(*route.RouteMessage); ok {
-			fmt.Printf("routeMessage: %+v\n", *rtMsg)
+			//fmt.Printf("routeMessage: %+v\n", *rtMsg)
 			destAddr := rtMsg.Addrs[syscall.RTAX_DST]
 			maskAddr := rtMsg.Addrs[syscall.RTAX_NETMASK]
 
