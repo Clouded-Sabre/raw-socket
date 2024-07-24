@@ -20,11 +20,15 @@ func getLocalIP(dstIP net.IP) (net.IP, *net.Interface, net.IP, error) {
 	}
 
 	// Handle loopback IP separately
+	loIface, err := getLoopbackInterface()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("cannot find loopback interface")
+	}
 	if dstIP.IsLoopback() {
 		if dstIP.String() == "127.0.0.1" {
-			return net.ParseIP("127.0.0.2"), nil, nil, nil // Return a different loopback IP
+			return net.ParseIP("127.0.0.2"), loIface, nil, nil // Return a different loopback IP
 		}
-		return net.ParseIP("127.0.0.1"), nil, nil, nil
+		return net.ParseIP("127.0.0.1"), loIface, nil, nil
 	}
 
 	routes, err := w.Routes()
@@ -90,7 +94,7 @@ func getLocalIP(dstIP net.IP) (net.IP, *net.Interface, net.IP, error) {
 
 	// Ensure the chosen IP is not the same as the destination IP
 	if chosenIP.Equal(dstIP) { // dstIP must be a local IP
-		return net.ParseIP("127.0.0.1"), nil, nil, nil // Return a fallback IP for non-loopback cases
+		return net.ParseIP("127.0.0.1"), loIface, nil, nil // Return a fallback IP for non-loopback cases
 	}
 
 	return chosenIP, chosenInterface, gatewayIP, nil
@@ -114,4 +118,22 @@ func getInterfaceIP(iface *net.Interface, gatewayIP net.IP) (net.IP, error) {
 	}
 
 	return nil, fmt.Errorf("no suitable IP address found for interface: %s", iface.Name)
+}
+
+func getLoopbackInterface() (*net.Interface, error) {
+	// Get all network interfaces
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	// Loop through interfaces to find the loopback interface
+	for _, iface := range interfaces {
+		if (iface.Flags&net.FlagLoopback) != 0 || iface.HardwareAddr == nil || len(iface.HardwareAddr) == 0 {
+			return &iface, nil
+		}
+	}
+
+	// Loopback interface not found
+	return nil, fmt.Errorf("loopback interface not found")
 }
