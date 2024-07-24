@@ -87,7 +87,7 @@ func (core *RawSocketCore) DialIP(protocol layers.IPProtocol, srcIP, dstIP net.I
 			// handle will be added in NewPcapSession
 		}
 
-		ps, err = NewPcapSession(params, conf)
+		ps, err = newPcapSession(params, conf)
 		if err != nil {
 			return nil, err
 		}
@@ -97,12 +97,53 @@ func (core *RawSocketCore) DialIP(protocol layers.IPProtocol, srcIP, dstIP net.I
 		core.mu.Unlock()
 	}
 
-	conn, err := ps.dialIP(iface, srcIP, dstIP, protocol)
+	conn, err := ps.dialIP(srcIP, dstIP, protocol)
 	if err != nil {
 		return nil, err
 	}
 
 	ps.rawIPConnMap[conn.getKey()] = conn
+
+	return conn, nil
+}
+
+func (core *RawSocketCore) ListenIP(ip net.IP, protocol layers.IPProtocol) (*RawIPConn, error) {
+	// Find the appropriate interface for the given IP
+	iface, err := findInterfaceByIP(ip)
+	if err != nil {
+		return nil, fmt.Errorf("interface not found for IP: %v", err)
+	}
+
+	// Look up or create a pcap session for the interface
+	psKey := iface.Name
+	core.mu.Lock()
+	ps, ok := core.pcapSessionMap[psKey]
+	core.mu.Unlock()
+	if !ok {
+		conf := &pcapSessionConfig{
+			arpRequestTimeout: core.arpRequestTimeout,
+		}
+
+		params := &pcapSessionParams{
+			key:                 iface.Name,
+			iface:               iface,
+			pcapSessionCloseSig: core.pcapSessionCloseSig,
+			arpCache:            core.arpCache,
+			// handle will be added in NewPcapSession
+		}
+		ps, err = newPcapSession(params, conf)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create pcap session: %v", err)
+		}
+		core.mu.Lock()
+		core.pcapSessionMap[psKey] = ps
+		core.mu.Unlock()
+	}
+
+	conn, err := ps.listenIP(ip, protocol)
+	if err != nil {
+		return nil, fmt.Errorf("rawSocketCore.ListenIP: %s", err)
+	}
 
 	return conn, nil
 }

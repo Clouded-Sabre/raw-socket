@@ -40,7 +40,7 @@ type pcapSession struct {
 }
 
 // NewPcapSession creates a new NewPcapSession with a global ARP cache
-func NewPcapSession(params *pcapSessionParams, config *pcapSessionConfig) (*pcapSession, error) {
+func newPcapSession(params *pcapSessionParams, config *pcapSessionConfig) (*pcapSession, error) {
 	var err error
 	params.handle, err = pcap.OpenLive(getPcapDeviceName(params.iface), 65536, true, pcap.BlockForever)
 	if err != nil {
@@ -70,22 +70,24 @@ func NewPcapSession(params *pcapSessionParams, config *pcapSessionConfig) (*pcap
 }
 
 // DialIP creates or retrieves a RawIPConn based on the given parameters
-func (ps *pcapSession) dialIP(iface *net.Interface, srcIP, dstIP net.IP, protocol layers.IPProtocol) (*RawIPConn, error) {
+func (ps *pcapSession) dialIP(srcIP, dstIP net.IP, protocol layers.IPProtocol) (*RawIPConn, error) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	key := iface.Name + ":" + "ipv4" + ":" + string(protocol)
+	// construct RawIPConn key and lookup to see if it already exists
+	key := srcIP.To4().String() + ":" + dstIP.To4().String() + ":" + string(protocol)
 	if _, exists := ps.rawIPConnMap[key]; exists {
 		return nil, fmt.Errorf("raw ip connection with the same source/destination IP and protocol type already exists. Cannot dial again")
 	}
 
 	// Create a new RawIPConn
 	ipConnConfig := &RawIPConnConfig{
-		srcIP:    srcIP,
-		dstIP:    dstIP,
+		localIP:  srcIP,
+		remoteIP: dstIP,
 		protocol: protocol,
 	}
 	ipConnParams := &RawIPConnParams{
+		isServer:           false,
 		key:                key,
 		pcapIface:          ps.params.iface,
 		handle:             ps.params.handle,
@@ -99,6 +101,42 @@ func (ps *pcapSession) dialIP(iface *net.Interface, srcIP, dstIP net.IP, protoco
 
 	// Add to map
 	ps.rawIPConnMap[key] = conn
+	return conn, nil
+}
+
+func (ps *pcapSession) listenIP(ip net.IP, protocol layers.IPProtocol) (*RawIPConn, error) {
+	// Create a unique key for the RawIPConn
+	connKey := fmt.Sprintf("%s:%s", ip.String(), protocol.String())
+
+	ps.mu.Lock()
+	_, exists := ps.rawIPConnMap[connKey]
+	ps.mu.Unlock()
+
+	if exists {
+		return nil, fmt.Errorf("IPConn Listener already exists for IP: %v and protocol: %v", ip, protocol)
+	}
+
+	// Create a new RawIPConn
+	ipConnConfig := &RawIPConnConfig{
+		localIP:  ip,
+		remoteIP: nil,
+		protocol: protocol,
+	}
+	ipConnParams := &RawIPConnParams{
+		isServer:           true,
+		key:                connKey,
+		pcapIface:          ps.params.iface,
+		handle:             ps.params.handle,
+		outputChan:         ps.outgoingPackets,
+		rawIPConnCloseChan: ps.rawIPConnCloseChan,
+	}
+	conn, err := NewRawIPConn(ipConnParams, ipConnConfig)
+	if err != nil {
+		log.Fatalln("Error dialing raw IPConn:", err)
+	}
+
+	// Add to map
+	ps.rawIPConnMap[connKey] = conn
 	return conn, nil
 }
 
@@ -117,13 +155,13 @@ func (ps *pcapSession) handleIncomingPackets() {
 				// Channel closed
 				return
 			}
-			ps.processPacket(&packet)
+			ps.processIncomingPacket(&packet)
 		}
 	}
 }
 
 // processPacket processes an incoming packet and forwards it to the appropriate RawIPConn
-func (session *pcapSession) processPacket(packet *gopacket.Packet) {
+func (session *pcapSession) processIncomingPacket(packet *gopacket.Packet) {
 	// Extract the IPv4 layer
 	ipLayer := (*packet).Layer(layers.LayerTypeIPv4)
 	if ipLayer == nil {
@@ -140,19 +178,31 @@ func (session *pcapSession) processPacket(packet *gopacket.Packet) {
 	// Determine the Layer 4 protocol
 	protocol := ipv4.Protocol
 
-	// Construct the key for RawIPConn lookup
-	key := session.params.iface.Name + ":ipv4:" + string(protocol)
+	// Construct the client connection key for RawIPConn lookup
+	key := ipv4.DstIP.String() + ":" + ipv4.SrcIP.String() + ":" + protocol.String()
 	session.mu.Lock()
 	conn, exists := session.rawIPConnMap[key]
 	session.mu.Unlock()
 
-	if !exists {
-		log.Println("No RawIPConn found for key:", key)
+	if exists {
+		// Forward the packet to the RawIPConn's input channel
+		conn.inputChan <- packet
 		return
 	}
 
-	// Forward the packet to the RawIPConn's input channel
-	conn.inputChan <- packet
+	// Construct the server connection key for RawIPConn lookup
+	key = ipv4.DstIP.String() + ":" + protocol.String()
+	session.mu.Lock()
+	conn, exists = session.rawIPConnMap[key]
+	session.mu.Unlock()
+
+	if exists {
+		// Forward the packet to the RawIPConn's input channel
+		conn.inputChan <- packet
+		return
+	}
+
+	log.Println("No RawIPConn found for key:", key)
 }
 
 func (ps *pcapSession) handleOutgoingPackets() {

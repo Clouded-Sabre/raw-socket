@@ -17,6 +17,7 @@ import (
 )
 
 type RawIPConnParams struct {
+	isServer           bool
 	key                string
 	pcapIface          *net.Interface
 	handle             *pcap.Handle
@@ -25,8 +26,8 @@ type RawIPConnParams struct {
 }
 
 type RawIPConnConfig struct {
-	srcIP    net.IP
-	dstIP    net.IP
+	localIP  net.IP
+	remoteIP net.IP // only used for client connection
 	protocol layers.IPProtocol
 }
 
@@ -103,8 +104,8 @@ func (conn *RawIPConn) Write(data []byte) (int, error) {
 		IHL:      5,
 		TTL:      64,
 		Protocol: conn.config.protocol,
-		SrcIP:    conn.config.srcIP,
-		DstIP:    conn.config.dstIP,
+		SrcIP:    conn.config.localIP,
+		DstIP:    conn.config.remoteIP,
 	}
 
 	// Serialize the packet.
@@ -142,7 +143,7 @@ func (conn *RawIPConn) Close() error {
 
 	close(conn.inputChan)
 	//conn.params.handle.Close()
-	log.Printf("Raw IPConn %s->%s with protocol id %d closed.\n", conn.config.srcIP, conn.config.dstIP, conn.config.protocol)
+	log.Printf("Raw IPConn %s->%s with protocol id %d closed.\n", conn.config.localIP, conn.config.remoteIP, conn.config.protocol)
 	return nil
 }
 
