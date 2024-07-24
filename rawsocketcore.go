@@ -63,7 +63,11 @@ func (core *RawSocketCore) DialIP(protocol layers.IPProtocol, srcIP, dstIP net.I
 			return nil, fmt.Errorf("provided srcIP %v is not a local IP: %v", srcIP, err)
 		}
 	}
-	log.Println("interface name is", iface.Name, "  Gateway IP is", gatewayIP, " source ip is", srcIP)
+	if gatewayIP != nil {
+		log.Println("interface name is", iface.Name, " Gateway IP is", gatewayIP, " source ip is", srcIP)
+	} else {
+		log.Println("interface name is", iface.Name, " Gateway IP is <nil>", " source ip is", srcIP)
+	}
 
 	// first we need to check if there is an pcapSession already listening at this iface
 	core.mu.Lock()

@@ -37,6 +37,7 @@ func main() {
 	srcIP := net.ParseIP(sourceIP)
 	core := NewRawSocketCore(arpCacheTimeout, arpRequestTimeout)
 	defer core.Close()
+	log.Println("Raw Socket Core started.")
 
 	conn, err := core.DialIP(layers.IPProtocolUDP, srcIP, dstIP)
 	if err != nil {

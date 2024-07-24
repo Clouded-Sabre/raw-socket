@@ -15,11 +15,15 @@ import (
 // getLocalIP finds the local IP that can route to the given destination IP
 func getLocalIP(dstIP net.IP) (net.IP, *net.Interface, net.IP, error) {
 	// Handle loopback IP separately
+	loIface, err := getLoopbackInterface()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("cannot find loopback interface")
+	}
 	if dstIP.IsLoopback() {
 		if dstIP.String() == "127.0.0.1" {
-			return net.ParseIP("127.0.0.2"), nil, nil, nil // Return a different loopback IP
+			return net.ParseIP("127.0.0.2"), loIface, nil, nil // Return a different loopback IP
 		}
-		return net.ParseIP("127.0.0.1"), nil, nil, nil
+		return net.ParseIP("127.0.0.1"), loIface, nil, nil
 	}
 
 	rib, err := route.FetchRIB(syscall.AF_INET, route.RIBTypeRoute, 0)
@@ -95,7 +99,7 @@ func getLocalIP(dstIP net.IP) (net.IP, *net.Interface, net.IP, error) {
 
 	// Ensure the chosen IP is not the same as the destination IP
 	if chosenIP.Equal(dstIP) { // dstIP must be a local IP
-		return net.ParseIP("127.0.0.1"), nil, nil, nil // Return a fallback IP for non-loopback cases
+		return net.ParseIP("127.0.0.1"), loIface, nil, nil // Return a fallback IP for non-loopback cases
 	}
 
 	return chosenIP, chosenIface, gatewayIP, nil
@@ -202,4 +206,22 @@ func getSubnetFromIP(iface *net.Interface, ip net.IP) (*net.IPNet, error) {
 	}
 
 	return nil, fmt.Errorf("no subnet found for IP %s on interface %s", ip, iface.Name)
+}
+
+func getLoopbackInterface() (*net.Interface, error) {
+	// Get all network interfaces
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	// Loop through interfaces and find "lo0"
+	for _, iface := range interfaces {
+		if iface.Name == "lo0" {
+			return &iface, nil
+		}
+	}
+
+	// "lo0" not found
+	return nil, fmt.Errorf("loopback interface 'lo0' not found")
 }

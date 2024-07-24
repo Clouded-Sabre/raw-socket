@@ -147,7 +147,7 @@ func getPcapDeviceName(iface *net.Interface) string {
 		for _, address := range device.Addresses {
 			ip := address.IP.To4()
 			if ip != nil {
-				log.Println("Pcap device ip:", ip)
+				log.Printf("Pcap device %s ip: %s\n", device.Name, ip)
 				for _, ifaceIP := range ifaceIPs {
 					if ifaceIP.String() == ip.String() {
 						return device.Name
