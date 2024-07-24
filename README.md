@@ -7,4 +7,4 @@ This raw socket implementation making use of Gopacket and creates similar net.IP
 
 Currently we've only implemented client side functions. Server side functions may be implemented in the future.
 
-As required by Gopacket, you need to install Npcap on Windows and libpcap on macos.
+As required by Gopacket, you need to install Npcap on Windows and libpcap on macos before using this library.
