@@ -1,4 +1,4 @@
-module test
+module github.com/Clouded-Sabre/rawsocket
 
 go 1.22.4
 

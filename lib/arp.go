@@ -1,7 +1,7 @@
 //go:build darwin || freebsd || windows
 // +build darwin freebsd windows
 
-package main
+package lib
 
 import (
 	"bytes"
@@ -161,7 +161,7 @@ func getPcapDeviceName(iface *net.Interface) string {
 }
 
 // listInterfaces prints the available network interfaces
-func listInterfaces() error {
+func ListInterfaces() error {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return err

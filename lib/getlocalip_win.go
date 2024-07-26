@@ -1,7 +1,7 @@
 //go:build windows
 // +build windows
 
-package main
+package lib
 
 import (
 	"fmt"
@@ -12,7 +12,7 @@ import (
 )
 
 // getLocalIP finds the local IP that can route to the given destination IP
-func getLocalIP(dstIP net.IP) (net.IP, *net.Interface, net.IP, error) {
+func GetLocalIP(dstIP net.IP) (net.IP, *net.Interface, net.IP, error) {
 	w, err := routewrapper.NewRouteWrapper()
 	if err != nil {
 		fmt.Printf("Error initializing route wrapper: %v\n", err)

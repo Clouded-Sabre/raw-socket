@@ -1,7 +1,7 @@
 //go:build darwin || freebsd
 // +build darwin freebsd
 
-package main
+package lib
 
 import (
 	"fmt"
@@ -13,7 +13,7 @@ import (
 )
 
 // getLocalIP finds the local IP that can route to the given destination IP
-func getLocalIP(dstIP net.IP) (net.IP, *net.Interface, net.IP, error) {
+func GetLocalIP(dstIP net.IP) (net.IP, *net.Interface, net.IP, error) {
 	// Handle loopback IP separately
 	loIface, err := getLoopbackInterface()
 	if err != nil {

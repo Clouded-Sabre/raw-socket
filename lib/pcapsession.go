@@ -1,7 +1,7 @@
 //go:build darwin || freebsd || windows
 // +build darwin freebsd windows
 
-package main
+package lib
 
 import (
 	"fmt"
@@ -249,7 +249,7 @@ func (ps *pcapSession) handleOutgoingPackets() {
 				}
 
 				// find out nextHopIP
-				_, _, gatewayIP, _ := getLocalIP(destIP)
+				_, _, gatewayIP, _ := GetLocalIP(destIP)
 				var nextHopIp net.IP
 				if gatewayIP != nil {
 					nextHopIp = gatewayIP

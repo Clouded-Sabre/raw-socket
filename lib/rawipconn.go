@@ -1,7 +1,7 @@
 //go:build darwin || freebsd || windows
 // +build darwin freebsd windows
 
-package main
+package lib
 
 import (
 	"encoding/binary"
@@ -93,6 +93,47 @@ func (conn *RawIPConn) Read(buffer []byte) (int, error) {
 	return 0, fmt.Errorf("no valid L4 payload found")
 }
 
+// ReadFrom reads a packet from the RawIPConn and returns the payload and the source address.
+func (conn *RawIPConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+
+	var (
+		packet *gopacket.Packet
+		ok     bool
+	)
+
+	// Check if the read deadline is in the past
+	if time.Now().After(conn.readDeadline) {
+		// Perform a blocking read
+		packet, ok = <-conn.inputChan
+		if !ok {
+			return 0, nil, fmt.Errorf("connection closed")
+		}
+	} else {
+		// Non-blocking read
+		select {
+		case packet, ok = <-conn.inputChan:
+			if !ok {
+				return 0, nil, fmt.Errorf("connection closed")
+			}
+		case <-time.After(time.Until(conn.readDeadline)):
+			return 0, nil, fmt.Errorf("read timeout")
+		}
+	}
+
+	// Extract the L4 payload and source IP
+	if ipLayer := (*packet).Layer(layers.LayerTypeIPv4); ipLayer != nil {
+		ip, _ := ipLayer.(*layers.IPv4)
+		if ip.Protocol == conn.config.protocol {
+			copy(buffer, ip.Payload)
+			return len(ip.Payload), &net.IPAddr{IP: ip.SrcIP}, nil
+		}
+	}
+
+	return 0, nil, fmt.Errorf("no valid L4 payload found")
+}
+
 // Write writes data to the RawIPConn.
 func (conn *RawIPConn) Write(data []byte) (int, error) {
 	conn.mu.Lock()
@@ -118,6 +159,44 @@ func (conn *RawIPConn) Write(data []byte) (int, error) {
 
 	// Create a gopacket.Packet from the serialized data
 	packet := gopacket.NewPacket(buffer.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
+
+	// Send the L3 packet to pcapSession's outputChan
+	conn.params.outputChan <- &packet
+
+	return len(data), nil
+}
+
+// WriteTo sends data to the specified destination address.
+func (conn *RawIPConn) WriteTo(data []byte, addr net.Addr) (int, error) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+
+	// Type assert the address to net.IPAddr
+	ipAddr, ok := addr.(*net.IPAddr)
+	if !ok {
+		return 0, fmt.Errorf("unsupported address type")
+	}
+
+	// Create the L3 packet (IPv4 layer)
+	ipLayer := &layers.IPv4{
+		Version:  4,
+		IHL:      5,
+		TTL:      64,
+		Protocol: conn.config.protocol,
+		SrcIP:    conn.config.localIP,
+		DstIP:    ipAddr.IP,
+	}
+
+	// Serialize the packet.
+	buffer := gopacket.NewSerializeBuffer()
+	options := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	err := gopacket.SerializeLayers(buffer, options, ipLayer, gopacket.Payload(data))
+	if err != nil {
+		return 0, err
+	}
+
+	// Create a gopacket.Packet from the serialized data
+	packet := gopacket.NewPacket(buffer.Bytes(), layers.LayerTypeIPv4, gopacket.Default)
 
 	// Send the L3 packet to pcapSession's outputChan
 	conn.params.outputChan <- &packet

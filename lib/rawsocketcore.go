@@ -1,7 +1,7 @@
 //go:build darwin || freebsd || windows
 // +build darwin freebsd windows
 
-package main
+package lib
 
 import (
 	"fmt"
@@ -52,7 +52,7 @@ func (core *RawSocketCore) DialIP(protocol layers.IPProtocol, srcIP, dstIP net.I
 	// Step 1: Determine the local IP used for source IP
 	if srcIP == nil {
 		// Determine the local IP routable to the destination
-		srcIP, iface, gatewayIP, err = getLocalIP(dstIP)
+		srcIP, iface, gatewayIP, err = GetLocalIP(dstIP)
 		if err != nil {
 			return nil, err
 		}
