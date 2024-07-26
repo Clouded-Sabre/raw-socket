@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strings"
@@ -112,42 +113,54 @@ func startClient(core *rawsocket.RawSocketCore, config *Config) {
 		stopChan = make(chan struct{})
 	)
 	// start Handle incoming responses first to avoid possible response miss
+	wg.Add(1)
 	go receiveResponses(conn, stopChan, &wg)
 
 	// Start sending packets with sequence IDs
-	go sendPackets(conn, config)
+	wg.Add(1)
+	n := 10
+	interval := 1000 // ms
+	go sendPackets(n, interval, conn, config, &wg)
+
+	// Start a timer to close stopChan after the specified timeout
+	timeout := time.Duration(n*interval+5000) * time.Millisecond // n*interval + 5 seconds
+	go func() {
+		time.Sleep(timeout)
+		log.Println("Timeout reached. Stopping go routines and exit.")
+		close(stopChan)
+	}()
+
+	wg.Wait()
 }
 
-func sendPackets(conn *rawsocket.RawIPConn, config *Config) {
-	for i := 0; i < 10; i++ {
+func sendPackets(n int, interval int, conn *rawsocket.RawIPConn, config *Config, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	intervalDuration := time.Duration(interval) * time.Millisecond
+	for i := 0; i < n; i++ {
 		message := fmt.Sprintf("packet Seq:%d", i)
 
 		switch config.Protocol {
 		case layers.IPProtocolUDP:
-			sendUDPPacket(conn, config, message)
+			sendUDPPacket(conn, message)
 		case layers.IPProtocolTCP:
-			sendTCPPacket(conn, config, message)
+			sendTCPPacket(conn, n, message)
 		case layers.IPProtocolICMPv4:
 			sendICMPPacket(conn, message)
 		default:
 			log.Fatalf("Unsupported protocol: %v", config.Protocol)
 		}
 
-		time.Sleep(1 * time.Second)
+		time.Sleep(intervalDuration)
 	}
 }
 
-func sendUDPPacket(conn *rawsocket.RawIPConn, config *Config, message string) {
-	srcIP, _, _, _ := rawsocket.GetLocalIP(config.serverIP)
+func sendUDPPacket(conn *rawsocket.RawIPConn, message string) {
 	udpLayer := &layers.UDP{
 		SrcPort: 12345,
 		DstPort: 54321,
 		Length:  8 + uint16(len(message)), // UDP header length + payload length
 	}
-	udpLayer.SetNetworkLayerForChecksum(&layers.IPv4{
-		SrcIP: srcIP,
-		DstIP: config.serverIP,
-	})
 
 	buffer := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
@@ -162,18 +175,13 @@ func sendUDPPacket(conn *rawsocket.RawIPConn, config *Config, message string) {
 	}
 }
 
-func sendTCPPacket(conn *rawsocket.RawIPConn, config *Config, message string) {
-	srcIP, _, _, _ := rawsocket.GetLocalIP(config.serverIP)
+func sendTCPPacket(conn *rawsocket.RawIPConn, seq int, message string) {
 	tcpLayer := &layers.TCP{
 		SrcPort: 12345,
 		DstPort: 54321,
-		Seq:     1,
+		Seq:     uint32(seq + 1),
 		Window:  1500,
 	}
-	tcpLayer.SetNetworkLayerForChecksum(&layers.IPv4{
-		SrcIP: srcIP,
-		DstIP: config.serverIP,
-	})
 
 	buffer := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
@@ -216,12 +224,58 @@ func receiveResponses(conn *rawsocket.RawIPConn, stopChan chan struct{}, wg *syn
 			log.Println("receiveResponses got stop signal. Exitting...")
 			return
 		default:
+			conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)) // read wait for 500 ms
 			n, err := conn.Read(buffer)
 			if err != nil {
-				log.Fatalf("Error reading response: %v", err)
+				// Check if the error is a timeout
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					// Handle timeout error (no data received within the timeout period)
+					continue // Continue waiting for incoming packets or handling closeSignal
+				}
+				if err == io.EOF {
+					log.Println("Server app got interruption. Stop and exit.")
+					return
+				}
+				fmt.Println("Error reading packet:", err)
+				return
 			}
-			fmt.Printf("Received response: %s\n", buffer[:n])
+			// Decode the packet
+			packet := gopacket.NewPacket(buffer[:n], layers.LayerTypeIPv4, gopacket.Default)
+
+			// Extract the L4 payload
+			if payload := getL4Payload(packet); payload != nil {
+				fmt.Printf("Received response: %s\n", string(payload))
+			} else {
+				fmt.Println("No L4 payload found")
+			}
 		}
 
 	}
+}
+
+// getL4Payload extracts the L4 payload from the packet
+func getL4Payload(packet gopacket.Packet) []byte {
+	if appLayer := packet.ApplicationLayer(); appLayer != nil {
+		return appLayer.Payload()
+	}
+
+	// Handle TCP layer
+	if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
+		tcp, _ := tcpLayer.(*layers.TCP)
+		return tcp.Payload
+	}
+
+	// Handle UDP layer
+	if udpLayer := packet.Layer(layers.LayerTypeUDP); udpLayer != nil {
+		udp, _ := udpLayer.(*layers.UDP)
+		return udp.Payload
+	}
+
+	// Handle ICMP layer
+	if icmpLayer := packet.Layer(layers.LayerTypeICMPv4); icmpLayer != nil {
+		icmp, _ := icmpLayer.(*layers.ICMPv4)
+		return icmp.Payload
+	}
+
+	return nil
 }

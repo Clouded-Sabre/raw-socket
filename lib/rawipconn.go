@@ -115,7 +115,7 @@ func (conn *RawIPConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 		select {
 		case packet, ok = <-conn.inputChan:
 			if !ok {
-				return 0, nil, fmt.Errorf("connection closed")
+				return 0, nil, &TimeoutError{"Read deadline exceeded"}
 			}
 		case <-time.After(time.Until(conn.readDeadline)):
 			return 0, nil, fmt.Errorf("read timeout")
@@ -262,4 +262,20 @@ func findInterfaceByIP(ip net.IP) (*net.Interface, error) {
 	}
 
 	return nil, fmt.Errorf("no interface found with IP %v", ip)
+}
+
+type TimeoutError struct {
+	msg string
+}
+
+func (e *TimeoutError) Error() string {
+	return e.msg
+}
+
+func (e *TimeoutError) Timeout() bool {
+	return true
+}
+
+func (e *TimeoutError) Temporary() bool {
+	return false
 }
