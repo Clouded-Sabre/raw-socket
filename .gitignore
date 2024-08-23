@@ -1,1 +1,5 @@
 test.exe
+client/client.exe
+server/server.exe
+test/netlib/netlib.exe
+test/simplesend/simplesend.exe
