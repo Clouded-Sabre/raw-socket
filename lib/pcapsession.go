@@ -28,10 +28,10 @@ type pcapSessionParams struct {
 }
 
 type pcapSession struct {
-	config             *pcapSessionConfig
-	params             *pcapSessionParams
-	mu                 sync.Mutex
-	rawIPConnMap       map[string]*RawIPConn
+	config *pcapSessionConfig
+	params *pcapSessionParams
+	//mu                 sync.Mutex
+	rawIPConnMap       sync.Map
 	outgoingPackets    chan *gopacket.Packet // Channel for outgoing packets
 	rawIPConnCloseChan chan *RawIPConn
 	stopChan           chan struct{}
@@ -48,9 +48,9 @@ func newPcapSession(params *pcapSessionParams, config *pcapSessionConfig) (*pcap
 	}
 
 	session := &pcapSession{
-		config:             config,
-		params:             params,
-		rawIPConnMap:       make(map[string]*RawIPConn),
+		config: config,
+		params: params,
+		//rawIPConnMap:       make(map[string]*RawIPConn),
 		outgoingPackets:    make(chan *gopacket.Packet, 100),
 		rawIPConnCloseChan: make(chan *RawIPConn),
 		stopChan:           make(chan struct{}),
@@ -71,12 +71,12 @@ func newPcapSession(params *pcapSessionParams, config *pcapSessionConfig) (*pcap
 
 // DialIP creates or retrieves a RawIPConn based on the given parameters
 func (ps *pcapSession) dialIP(srcIP, dstIP net.IP, protocol layers.IPProtocol) (*RawIPConn, error) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
+	//ps.mu.Lock()
+	//defer ps.mu.Unlock()
 
 	// construct RawIPConn key and lookup to see if it already exists
 	key := srcIP.To4().String() + ":" + dstIP.To4().String() + ":" + string(protocol)
-	if _, exists := ps.rawIPConnMap[key]; exists {
+	if _, exists := ps.rawIPConnMap.Load(key); exists {
 		return nil, fmt.Errorf("raw ip connection with the same source/destination IP and protocol type already exists. Cannot dial again")
 	}
 
@@ -100,18 +100,16 @@ func (ps *pcapSession) dialIP(srcIP, dstIP net.IP, protocol layers.IPProtocol) (
 	}
 
 	// Add to map
-	ps.rawIPConnMap[key] = conn
+	ps.rawIPConnMap.Store(key, conn)
 	return conn, nil
 }
 
 func (ps *pcapSession) listenIP(ip net.IP, protocol layers.IPProtocol) (*RawIPConn, error) {
 	// Create a unique key for the RawIPConn
 	connKey := fmt.Sprintf("%s:%s", ip.String(), protocol.String())
+	log.Println("service key is", connKey)
 
-	ps.mu.Lock()
-	_, exists := ps.rawIPConnMap[connKey]
-	ps.mu.Unlock()
-
+	_, exists := ps.rawIPConnMap.Load(connKey)
 	if exists {
 		return nil, fmt.Errorf("IPConn Listener already exists for IP: %v and protocol: %v", ip, protocol)
 	}
@@ -136,14 +134,22 @@ func (ps *pcapSession) listenIP(ip net.IP, protocol layers.IPProtocol) (*RawIPCo
 	}
 
 	// Add to map
-	ps.rawIPConnMap[connKey] = conn
+	ps.rawIPConnMap.Store(connKey, conn)
 	return conn, nil
 }
 
 func (ps *pcapSession) handleIncomingPackets() {
 	defer ps.wg.Done()
 
-	src := gopacket.NewPacketSource(ps.params.handle, layers.LayerTypeEthernet)
+	// Check if the interface is a loopback interface
+	var decoder gopacket.Decoder
+	if (ps.params.iface.Flags & net.FlagLoopback) != 0 {
+		decoder = layers.LayerTypeLoopback
+	} else {
+		decoder = layers.LayerTypeEthernet
+	}
+
+	src := gopacket.NewPacketSource(ps.params.handle, decoder)
 	in := src.Packets()
 	defer ps.params.handle.Close()
 	for {
@@ -161,7 +167,7 @@ func (ps *pcapSession) handleIncomingPackets() {
 }
 
 // processPacket processes an incoming packet and forwards it to the appropriate RawIPConn
-func (session *pcapSession) processIncomingPacket(packet *gopacket.Packet) {
+func (ps *pcapSession) processIncomingPacket(packet *gopacket.Packet) {
 	// Extract the IPv4 layer
 	ipLayer := (*packet).Layer(layers.LayerTypeIPv4)
 	if ipLayer == nil {
@@ -180,11 +186,10 @@ func (session *pcapSession) processIncomingPacket(packet *gopacket.Packet) {
 
 	// Construct the client connection key for RawIPConn lookup
 	key := ipv4.DstIP.String() + ":" + ipv4.SrcIP.String() + ":" + protocol.String()
-	session.mu.Lock()
-	conn, exists := session.rawIPConnMap[key]
-	session.mu.Unlock()
-
+	log.Println("Client key is", key)
+	value, exists := ps.rawIPConnMap.Load(key)
 	if exists {
+		conn := value.(*RawIPConn)
 		// Forward the packet to the RawIPConn's input channel
 		conn.inputChan <- packet
 		return
@@ -192,17 +197,44 @@ func (session *pcapSession) processIncomingPacket(packet *gopacket.Packet) {
 
 	// Construct the server connection key for RawIPConn lookup
 	key = ipv4.DstIP.String() + ":" + protocol.String()
-	session.mu.Lock()
-	conn, exists = session.rawIPConnMap[key]
-	session.mu.Unlock()
-
+	log.Println("Server key is", key)
+	value, exists = ps.rawIPConnMap.Load(key)
 	if exists {
+		conn := value.(*RawIPConn)
 		// Forward the packet to the RawIPConn's input channel
 		conn.inputChan <- packet
 		return
 	}
 
+	// Check for TCP 3-way handshake packets originated locally
+	tcpLayer := (*packet).Layer(layers.LayerTypeTCP)
+	if tcpLayer != nil {
+		tcp, _ := tcpLayer.(*layers.TCP)
+
+		// Construct the client connection key (outbound packet) for RawIPConn lookup
+		key = ipv4.SrcIP.String() + ":" + ipv4.DstIP.String() + ":" + protocol.String()
+		ps.sendSynPacket(packet, key, tcp)
+
+		// Construct the server connection key for RawIPConn lookup
+		key = ipv4.SrcIP.String() + ":" + protocol.String()
+		ps.sendSynPacket(packet, key, tcp)
+	}
+
 	log.Println("No RawIPConn found for key:", key)
+}
+
+func (ps *pcapSession) sendSynPacket(packet *gopacket.Packet, key string, tcp *layers.TCP) {
+	value, exists := ps.rawIPConnMap.Load(key)
+	if exists {
+		// Check for SYN/SYN-ACK packet
+		if tcp.SYN || (tcp.ACK && len(tcp.Payload) == 0) {
+			log.Println("Detected locally originated SYN or zero-length ACK packet")
+			conn := value.(*RawIPConn)
+			// Forward the packet to the RawIPConn's input channel. Note that it's RawIPConn's resposiblity to tell which ACK belongs to 3-way handshake
+			conn.inputChan <- packet
+			return
+		}
+	}
 }
 
 func (ps *pcapSession) handleOutgoingPackets() {
@@ -220,7 +252,11 @@ func (ps *pcapSession) handleOutgoingPackets() {
 			if (ps.params.iface.Flags & net.FlagLoopback) != 0 {
 				// Loopback interface: No Ethernet layer
 				buffer = gopacket.NewSerializeBuffer()
-				err = gopacket.SerializeLayers(buffer, options, gopacket.Payload((*pkt).Data()))
+				// Used for loopback interface
+				lo := layers.Loopback{
+					Family: layers.ProtocolFamilyIPv4,
+				}
+				err = gopacket.SerializeLayers(buffer, options, &lo, gopacket.Payload((*pkt).Data()))
 				if err != nil {
 					log.Println("Error serializing packet:", err)
 					continue
@@ -230,27 +266,16 @@ func (ps *pcapSession) handleOutgoingPackets() {
 				// get pkt's destination ip
 				ipLayer := (*pkt).Layer(layers.LayerTypeIPv4)
 				if ipLayer == nil {
-					ipLayer = (*pkt).Layer(layers.LayerTypeIPv6)
-					if ipLayer == nil {
-						log.Println("pcapSession.handleOutgoingPackets: packet does not contain an IP layer")
-						continue // skip the packet
-					}
+					log.Println("pcapSession.handleOutgoingPackets: packet does not contain an IPv4 layer")
+					continue // skip the packet
 				}
 
-				var destIP net.IP
-
-				if ipv4, ok := ipLayer.(*layers.IPv4); ok {
-					destIP = ipv4.DstIP
-				} else if ipv6, ok := ipLayer.(*layers.IPv6); ok {
-					destIP = ipv6.DstIP
-				} else {
-					log.Println("pcapSession.handleOutgoingPackets: unexpected IP layer type")
-					continue
-				}
+				ipv4, _ := ipLayer.(*layers.IPv4)
+				destIP := ipv4.DstIP
 
 				// find out nextHopIP
 				_, _, gatewayIP, _ := GetLocalIP(destIP)
-				var nextHopIp net.IP
+				var nextHopIp = destIP
 				if gatewayIP != nil {
 					nextHopIp = gatewayIP
 				}
@@ -293,12 +318,9 @@ func (ps *pcapSession) handleRawIPConnClose() {
 		case <-ps.stopChan:
 			return
 		case conn := <-ps.rawIPConnCloseChan:
-			ps.mu.Lock()
-			delete(ps.rawIPConnMap, conn.getKey())
-			isEmpty := len(ps.rawIPConnMap) == 0
-			ps.mu.Unlock()
+			ps.rawIPConnMap.Delete(conn.getKey())
 
-			if isEmpty {
+			if mapLength(&(ps.rawIPConnMap)) == 0 {
 				// Start a timeout timer for 10 seconds
 				timer := time.NewTimer(10 * time.Second)
 				defer timer.Stop()
@@ -307,10 +329,7 @@ func (ps *pcapSession) handleRawIPConnClose() {
 				case <-ps.stopChan:
 					return
 				case <-timer.C:
-					ps.mu.Lock()
-					stillEmpty := len(ps.rawIPConnMap) == 0
-					ps.mu.Unlock()
-					if stillEmpty {
+					if mapLength(&(ps.rawIPConnMap)) == 0 {
 						ps.close() // Close the pcapsession if empty after timeout
 					}
 				}
@@ -326,11 +345,11 @@ func (ps *pcapSession) close() {
 	ps.isClosed = true
 
 	var ipConns []*RawIPConn
-	ps.mu.Lock()
-	for _, ipConn := range ps.rawIPConnMap {
-		ipConns = append(ipConns, ipConn)
-	}
-	ps.mu.Unlock()
+	ps.rawIPConnMap.Range(func(key, value interface{}) bool {
+		ipConns = append(ipConns, value.(*RawIPConn))
+		return true // continue iteration
+	})
+
 	for _, ipConn := range ipConns {
 		ipConn.Close()
 	}
@@ -343,4 +362,13 @@ func (ps *pcapSession) close() {
 	ps.params.handle.Close()
 
 	log.Printf("Pcap Session %s closed", ps.params.key)
+}
+
+func mapLength(m *sync.Map) int {
+	count := 0
+	m.Range(func(key, value interface{}) bool {
+		count++
+		return true
+	})
+	return count
 }

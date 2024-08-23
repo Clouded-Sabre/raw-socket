@@ -33,20 +33,22 @@ type RawIPConnConfig struct {
 
 // RawIPConn represents a connection for raw IP packets.
 type RawIPConn struct {
-	params       *RawIPConnParams
-	config       *RawIPConnConfig
-	readDeadline time.Time
-	inputChan    chan *gopacket.Packet
-	isClosed     bool
-	mu           sync.Mutex
+	params        *RawIPConnParams
+	config        *RawIPConnConfig
+	readDeadline  time.Time
+	inputChan     chan *gopacket.Packet
+	tcpSignalChan chan *gopacket.Packet // to receive TCP signalling packets sniffed by pcapSession. For client side, it's SYN and ACK. For Server, it's SYN-ACK
+	isClosed      bool
+	mu            sync.Mutex
 }
 
 func NewRawIPConn(params *RawIPConnParams, config *RawIPConnConfig) (*RawIPConn, error) {
 	conn := &RawIPConn{
-		params:    params,
-		config:    config,
-		inputChan: make(chan *gopacket.Packet),
-		mu:        sync.Mutex{},
+		params:        params,
+		config:        config,
+		inputChan:     make(chan *gopacket.Packet),
+		tcpSignalChan: make(chan *gopacket.Packet),
+		mu:            sync.Mutex{},
 	}
 
 	return conn, nil
@@ -77,7 +79,7 @@ func (conn *RawIPConn) Read(buffer []byte) (int, error) {
 				return 0, fmt.Errorf("connection closed")
 			}
 		case <-time.After(time.Until(conn.readDeadline)):
-			return 0, fmt.Errorf("read timeout")
+			return 0, &TimeoutError{msg: "read timeout"}
 		}
 	}
 
@@ -115,10 +117,10 @@ func (conn *RawIPConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 		select {
 		case packet, ok = <-conn.inputChan:
 			if !ok {
-				return 0, nil, &TimeoutError{"Read deadline exceeded"}
+				return 0, nil, fmt.Errorf("connection closed")
 			}
 		case <-time.After(time.Until(conn.readDeadline)):
-			return 0, nil, fmt.Errorf("read timeout")
+			return 0, nil, &TimeoutError{msg: "read timeout"}
 		}
 	}
 
@@ -158,7 +160,7 @@ func (conn *RawIPConn) Write(data []byte) (int, error) {
 	}
 
 	// Create a gopacket.Packet from the serialized data
-	packet := gopacket.NewPacket(buffer.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
+	packet := gopacket.NewPacket(buffer.Bytes(), layers.LayerTypeIPv4, gopacket.Default)
 
 	// Send the L3 packet to pcapSession's outputChan
 	conn.params.outputChan <- &packet
@@ -262,6 +264,14 @@ func findInterfaceByIP(ip net.IP) (*net.Interface, error) {
 	}
 
 	return nil, fmt.Errorf("no interface found with IP %v", ip)
+}
+
+func (conn *RawIPConn) LocalIP() net.IP {
+	return conn.config.localIP
+}
+
+func (conn *RawIPConn) RemoteIP() net.IP {
+	return conn.config.remoteIP
 }
 
 type TimeoutError struct {

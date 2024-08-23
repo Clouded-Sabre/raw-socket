@@ -71,9 +71,11 @@ func readARP(handle *pcap.Handle, iface *net.Interface, targetIP net.IP, arpRepl
 // writeARP writes an ARP request for the target IP to the pcap handle.
 func writeARP(handle *pcap.Handle, iface *net.Interface, targetIP net.IP) error {
 	// Get the interface IP address
+	log.Printf("iface name is: %s     target IP: %s", iface.Name, targetIP)
 	var ifaceIP net.IP
 	if addrs, err := iface.Addrs(); err == nil {
 		for _, addr := range addrs {
+			log.Println("addr: ", addr)
 			if ipnet, ok := addr.(*net.IPNet); ok {
 				if ipnet.Contains(targetIP) {
 					if ip4 := ipnet.IP.To4(); ip4 != nil {

@@ -102,7 +102,7 @@ func (core *RawSocketCore) DialIP(protocol layers.IPProtocol, srcIP, dstIP net.I
 		return nil, err
 	}
 
-	ps.rawIPConnMap[conn.getKey()] = conn
+	ps.rawIPConnMap.Store(conn.getKey(), conn)
 
 	return conn, nil
 }

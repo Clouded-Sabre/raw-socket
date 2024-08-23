@@ -43,16 +43,16 @@ func main() {
 	}
 	defer conn.Close()
 
-	//srcIP, _, _, _ = rawsocket.GetLocalIP(dstIP)
+	srcIP, _, _, _ = rawsocket.GetLocalIP(dstIP)
 	udpLayer := &layers.UDP{
 		SrcPort: 12345,
 		DstPort: 54321,
 		Length:  8 + 6, // UDP header length + payload length
 	}
-	/*udpLayer.SetNetworkLayerForChecksum(&layers.IPv4{
+	udpLayer.SetNetworkLayerForChecksum(&layers.IPv4{
 		SrcIP: srcIP,
 		DstIP: dstIP,
-	})*/
+	})
 
 	// Serialize the UDP layer and the payload
 	buffer := gopacket.NewSerializeBuffer()

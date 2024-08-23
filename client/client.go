@@ -92,12 +92,6 @@ func main() {
 	// Create the RawSocketCore
 	core := rawsocket.NewRawSocketCore(config.ARPCacheTimeout, config.ARPRequestTimeout)
 
-	conn, err := core.DialIP(config.Protocol, config.sourceIP, config.serverIP)
-	if err != nil {
-		log.Fatalf("Failed to dial to server IP %s: %v", config.serverIP, err)
-	}
-	defer conn.Close()
-
 	startClient(core, config)
 }
 
@@ -142,9 +136,9 @@ func sendPackets(n int, interval int, conn *rawsocket.RawIPConn, config *Config,
 
 		switch config.Protocol {
 		case layers.IPProtocolUDP:
-			sendUDPPacket(conn, message)
+			sendUDPPacket(conn, config, message)
 		case layers.IPProtocolTCP:
-			sendTCPPacket(conn, n, message)
+			sendTCPPacket(conn, i, config, message)
 		case layers.IPProtocolICMPv4:
 			sendICMPPacket(conn, message)
 		default:
@@ -155,12 +149,17 @@ func sendPackets(n int, interval int, conn *rawsocket.RawIPConn, config *Config,
 	}
 }
 
-func sendUDPPacket(conn *rawsocket.RawIPConn, message string) {
+func sendUDPPacket(conn *rawsocket.RawIPConn, config *Config, message string) {
+	srcIP, _, _, _ := rawsocket.GetLocalIP(config.serverIP)
 	udpLayer := &layers.UDP{
 		SrcPort: 12345,
 		DstPort: 54321,
 		Length:  8 + uint16(len(message)), // UDP header length + payload length
 	}
+	udpLayer.SetNetworkLayerForChecksum(&layers.IPv4{ // needed for pseudo IP header for checksum calculation
+		SrcIP: srcIP,
+		DstIP: config.serverIP,
+	})
 
 	buffer := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
@@ -175,13 +174,18 @@ func sendUDPPacket(conn *rawsocket.RawIPConn, message string) {
 	}
 }
 
-func sendTCPPacket(conn *rawsocket.RawIPConn, seq int, message string) {
+func sendTCPPacket(conn *rawsocket.RawIPConn, seq int, config *Config, message string) {
+	srcIP, _, _, _ := rawsocket.GetLocalIP(config.serverIP)
 	tcpLayer := &layers.TCP{
 		SrcPort: 12345,
 		DstPort: 54321,
 		Seq:     uint32(seq + 1),
 		Window:  1500,
 	}
+	tcpLayer.SetNetworkLayerForChecksum(&layers.IPv4{ // needed for pseudo IP header for checksum calculation
+		SrcIP: srcIP,
+		DstIP: config.serverIP,
+	})
 
 	buffer := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
